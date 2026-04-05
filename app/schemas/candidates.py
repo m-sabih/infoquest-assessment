@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -6,7 +8,7 @@ class CandidateRecord(BaseModel):
 
     model_config = {"extra": "ignore"}
 
-    id: int
+    id: UUID
     first_name: str | None = None
     last_name: str | None = None
     email: str | None = None
