@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, tags=["health"])
     app.include_router(candidates.router, tags=["candidates"])
     app.include_router(ingest.router, tags=["ingest"])
+    logger.info("API routes mounted.")
     return app
 
 
