@@ -95,14 +95,22 @@ async def _retrieve_node(
     store: VectorStore,
 ) -> ChatGraphState:
     q = state.get("rewritten_query") or state["query"]
-    logger.info("chat_graph: retrieve start (top_k=%s)\nquery=%r", state.get("top_k"), q)
+    top_k = state["top_k"]
+    # Over-retrieve so the LLM re-ranker has a larger candidate pool to judge from.
+    retrieve_k = top_k * settings.rerank_multiplier
+    logger.info(
+        "chat_graph: retrieve start (top_k=%s retrieve_k=%s)\nquery=%r",
+        top_k,
+        retrieve_k,
+        q,
+    )
 
     query_text, where = await extract_filters_llm(settings=settings, query=q)
     hits = await search_experts(
         settings=settings,
         store=store,
         query=query_text,
-        top_k=state["top_k"],
+        top_k=retrieve_k,
         where=where,
     )
 
@@ -142,8 +150,9 @@ async def _format_base_node(state: ChatGraphState) -> ChatGraphState:
 
 async def _explain_node(state: ChatGraphState, *, settings: Settings) -> ChatGraphState:
     q = state.get("rewritten_query") or state["query"]
+    top_k = int(state.get("top_k") or 10)
     hits = state.get("hits") or []
-    logger.info("chat_graph: explain start (hits=%s)", len(hits))
+    logger.info("chat_graph: explain start (hits=%s top_k=%s)", len(hits), top_k)
     explain_map = await explain_matches_llm(settings=settings, query=q, hits=hits)
     logger.info("chat_graph: explain llm_done (explained=%s)", len(explain_map))
 
@@ -156,12 +165,44 @@ async def _explain_node(state: ChatGraphState, *, settings: Settings) -> ChatGra
             continue
         m["why_match"] = info.get("why_match") or m.get("why_match")
         m["highlights"] = info.get("highlights") or m.get("highlights") or []
+        rs = info.get("relevance_score")
+        if rs is not None:
+            m["relevance_score"] = float(rs)
         patched += 1
 
-    result_ids = [str(m["candidate_id"]) for m in match_dicts]
-    logger.info("chat_graph: explain done (patched=%s matches=%s)", patched, len(match_dicts))
+    # Re-rank by LLM relevance score and filter out poor matches.
+    min_score = settings.min_rerank_score
+    good = [m for m in match_dicts if m.get("relevance_score") is not None and m["relevance_score"] >= min_score]
+    good.sort(key=lambda m: m.get("relevance_score", 0.0), reverse=True)
+
+    if good:
+        final = good[:top_k]
+        logger.info(
+            "chat_graph: explain rerank kept=%s/%s (min_score=%.1f top_k=%s)",
+            len(final),
+            len(match_dicts),
+            min_score,
+            top_k,
+        )
+    else:
+        # No candidate cleared the threshold — return the best available so the
+        # caller still gets something (with honest why_match scores already set).
+        all_scored = sorted(
+            match_dicts,
+            key=lambda m: m.get("relevance_score") or 0.0,
+            reverse=True,
+        )
+        final = all_scored[:top_k]
+        logger.warning(
+            "chat_graph: explain no candidate cleared min_score=%.1f, returning top %s by score",
+            min_score,
+            len(final),
+        )
+
+    result_ids = [str(m["candidate_id"]) for m in final]
+    logger.info("chat_graph: explain done (patched=%s final_matches=%s)", patched, len(final))
     return {
-        "matches": match_dicts,
+        "matches": final,
         "result_ids": result_ids,
         # persist context for follow-ups
         "previous_query": q,
@@ -185,6 +226,9 @@ class ChatNodes:
 
     async def explain(self, state: ChatGraphState) -> ChatGraphState:
         return await _explain_node(state, settings=self._settings)
+
+    async def format_base(self, state: ChatGraphState) -> ChatGraphState:
+        return await _format_base_node(state)
 
 
 def build_chat_graph(*, settings: Settings, store: VectorStore, checkpointer=None):
