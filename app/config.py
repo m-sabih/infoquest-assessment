@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     embedding_batch_size: int = Field(default=24, ge=1, le=1024, validation_alias="EMBEDDING_BATCH_SIZE")
     max_profile_chars: int = Field(default=24_000, ge=1000, validation_alias="MAX_PROFILE_CHARS")
 
+    # Retrieve rerank_multiplier × top_k candidates from the vector store, then
+    # let the LLM score them so only genuinely relevant profiles are returned.
+    rerank_multiplier: int = Field(default=3, ge=1, le=10, validation_alias="RERANK_MULTIPLIER")
+    # Minimum LLM relevance score (0–10) a candidate must receive to be included
+    # in the final result set.  Candidates below this threshold are dropped.
+    min_rerank_score: float = Field(default=4.0, ge=0.0, le=10.0, validation_alias="MIN_RERANK_SCORE")
+
 
 @lru_cache
 def get_settings() -> Settings:
