@@ -6,14 +6,12 @@ from fastapi import FastAPI
 
 from app.api.routes import candidates, chat, health, ingest
 from app.config import get_settings
+from app.json_logging import configure_json_logging
 from app.services.chat_graph import build_chat_graph
 from app.services.vector_store import VectorStore
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
+configure_json_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
