@@ -1,10 +1,14 @@
 from dataclasses import dataclass
+import json
+import logging
 from uuid import UUID
 
 from app.config import Settings
 from app.services.embeddings_client import EmbeddingsClient
 from app.services.chat_client import ChatClient
 from app.services.vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -27,8 +31,16 @@ async def rewrite_query(
 ) -> RewriteResult:
     prev_q = (previous_query or "").strip()
     if not settings.openrouter_api_key.strip() or not prev_q:
+        logger.info("rewrite_query: skip (no api key or no previous_query)")
         return RewriteResult(rewritten_query=query, use_previous_results=False)
 
+    logger.info(
+        "rewrite_query: start (prev_query_len=%s query_len=%s prev_ids=%s model=%s)",
+        len(prev_q),
+        len(query),
+        len(previous_result_ids or []),
+        settings.chat_model,
+    )
     client = ChatClient(
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
@@ -50,10 +62,16 @@ async def rewrite_query(
     try:
         obj = await client.json_completion(system=system, user=user)
     except Exception:
+        logger.exception("rewrite_query: LLM call failed")
         return RewriteResult(rewritten_query=query, use_previous_results=False)
 
     rq = str(obj.get("rewritten_query") or "").strip() or query
     upr = bool(obj.get("use_previous_results")) if "use_previous_results" in obj else False
+    logger.info(
+        "rewrite_query: done (rewritten_len=%s use_previous_results=%s)",
+        len(rq),
+        upr,
+    )
     return RewriteResult(rewritten_query=rq, use_previous_results=upr)
 
 
@@ -64,6 +82,7 @@ async def search_experts(
     query: str,
     top_k: int,
 ) -> list[dict]:
+    logger.info("search_experts: start (query_len=%s top_k=%s)", len(query), top_k)
     embed = EmbeddingsClient(
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
@@ -91,6 +110,7 @@ async def search_experts(
                 "document": doc or "",
             }
         )
+    logger.info("search_experts: done (hits=%s)", len(out))
     return out
 
 
@@ -142,10 +162,19 @@ async def explain_matches_llm(
     Returns mapping: candidate_id(str) -> {"why_match": str, "highlights": [str, ...]}
     """
     if not settings.openrouter_api_key.strip():
+        logger.info("explain_matches_llm: skip (no api key)")
         return {}
     if not hits:
+        logger.info("explain_matches_llm: skip (no hits)")
         return {}
 
+    expected_ids = [str(h.get("candidate_id")) for h in hits]
+    logger.info(
+        "explain_matches_llm: start (query_len=%s hits=%s model=%s)",
+        len(query),
+        len(hits),
+        settings.chat_model,
+    )
     client = ChatClient(
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
@@ -169,6 +198,7 @@ async def explain_matches_llm(
     system = (
         "You are an expert recruiter assistant. "
         "Given a user search query and candidate profile snippets, produce concise explanations. "
+        "You MUST return one item for EVERY candidate_id provided (no omissions). "
         "Return JSON only with shape:\n"
         "{\"items\": [{\"candidate_id\": \"<id>\", \"why_match\": \"<text>\", \"highlights\": [\"<h1>\", \"<h2>\"]}]}.\n"
         "Example:\n"
@@ -185,12 +215,14 @@ async def explain_matches_llm(
         "candidates": candidates,
     }
     try:
-        obj = await client.json_completion(system=system, user=str(user))
+        obj = await client.json_completion(system=system, user=json.dumps(user, ensure_ascii=False))
     except Exception:
+        logger.exception("LLM explanation call failed")
         return {}
 
     items = obj.get("items") if isinstance(obj, dict) else None
     if not isinstance(items, list):
+        logger.warning("LLM explanation returned unexpected JSON shape: %s", obj)
         return {}
 
     out: dict[str, dict] = {}
@@ -210,5 +242,5 @@ async def explain_matches_llm(
         highlights = [str(h).strip() for h in highs if str(h).strip()][:5]
         out[cid] = {"why_match": why, "highlights": highlights}
 
+    logger.info("explain_matches_llm: done (explained=%s of %s)", len(out), len(expected_ids))
     return out
-

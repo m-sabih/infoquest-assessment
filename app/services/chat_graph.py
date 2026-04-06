@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -7,6 +8,8 @@ from langgraph.graph import END, START, StateGraph
 from app.config import Settings
 from app.services.chat_logic import build_matches_base, explain_matches_llm, rewrite_query, search_experts
 from app.services.vector_store import VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class ChatGraphState(TypedDict, total=False):
@@ -40,15 +43,30 @@ def _should_retry(state: ChatGraphState) -> bool:
     hits = state.get("hits") or []
     if attempt >= 1:
         return False
-    return len(hits) < max(3, int(state.get("top_k") or 10) // 3)
+    threshold = max(3, int(state.get("top_k") or 10) // 3)
+    decision = len(hits) < threshold
+    logger.info(
+        "chat_graph: retry_decision=%s (attempt=%s hits=%s threshold=%s)",
+        decision,
+        attempt,
+        len(hits),
+        threshold,
+    )
+    return decision
 
 
 async def _rewrite_node(state: ChatGraphState, *, settings: Settings) -> ChatGraphState:
+    logger.info("chat_graph: rewrite start (query_len=%s)", len(state.get("query") or ""))
     rr = await rewrite_query(
         settings=settings,
         query=state["query"],
         previous_query=state.get("previous_query"),
         previous_result_ids=state.get("previous_result_ids"),
+    )
+    logger.info(
+        "chat_graph: rewrite done (rewritten_len=%s use_previous_results=%s)",
+        len(rr.rewritten_query),
+        rr.use_previous_results,
     )
     return {
         "rewritten_query": rr.rewritten_query,
@@ -64,13 +82,17 @@ async def _retrieve_node(
     store: VectorStore,
 ) -> ChatGraphState:
     q = state.get("rewritten_query") or state["query"]
+    logger.info("chat_graph: retrieve start (query_len=%s top_k=%s)", len(q), state.get("top_k"))
     hits = await search_experts(settings=settings, store=store, query=q, top_k=state["top_k"])
 
     # If the user asked to filter prior results, restrict to those ids.
     if state.get("use_previous_results") and state.get("previous_result_ids"):
         keep = set(state["previous_result_ids"])
+        before = len(hits)
         hits = [h for h in hits if str(h.get("candidate_id")) in keep]
+        logger.info("chat_graph: retrieve filtered_to_previous (before=%s after=%s)", before, len(hits))
 
+    logger.info("chat_graph: retrieve done (hits=%s)", len(hits))
     return {"hits": hits}
 
 
@@ -81,24 +103,31 @@ async def _retry_node(
     store: VectorStore,
 ) -> ChatGraphState:
     # Retry with the raw user query (skip rewrite), preserving prior-result filtering if requested.
+    logger.info("chat_graph: retry start (query_len=%s top_k=%s)", len(state.get("query") or ""), state.get("top_k"))
     hits = await search_experts(settings=settings, store=store, query=state["query"], top_k=state["top_k"])
     if state.get("use_previous_results") and state.get("previous_result_ids"):
         keep = set(state["previous_result_ids"])
         hits = [h for h in hits if str(h.get("candidate_id")) in keep]
+    logger.info("chat_graph: retry done (hits=%s)", len(hits))
     return {"hits": hits, "attempt": int(state.get("attempt") or 0) + 1, "retry_reason": "low_recall_after_rewrite"}
 
 
 async def _format_base_node(state: ChatGraphState) -> ChatGraphState:
+    logger.info("chat_graph: format_base start (hits=%s)", len(state.get("hits") or []))
     base = build_matches_base(hits=state.get("hits") or [])
+    logger.info("chat_graph: format_base done (matches=%s)", len(base))
     return {"matches": base}
 
 
 async def _explain_node(state: ChatGraphState, *, settings: Settings) -> ChatGraphState:
     q = state.get("rewritten_query") or state["query"]
     hits = state.get("hits") or []
+    logger.info("chat_graph: explain start (hits=%s)", len(hits))
     explain_map = await explain_matches_llm(settings=settings, query=q, hits=hits)
+    logger.info("chat_graph: explain llm_done (explained=%s)", len(explain_map))
 
     match_dicts = state.get("matches") or []
+    patched = 0
     for m in match_dicts:
         cid = str(m.get("candidate_id"))
         info = explain_map.get(cid)
@@ -106,8 +135,10 @@ async def _explain_node(state: ChatGraphState, *, settings: Settings) -> ChatGra
             continue
         m["why_match"] = info.get("why_match") or m.get("why_match")
         m["highlights"] = info.get("highlights") or m.get("highlights") or []
+        patched += 1
 
     result_ids = [str(m["candidate_id"]) for m in match_dicts]
+    logger.info("chat_graph: explain done (patched=%s matches=%s)", patched, len(match_dicts))
     return {
         "matches": match_dicts,
         "result_ids": result_ids,
