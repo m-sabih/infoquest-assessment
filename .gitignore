@@ -1,0 +1,13 @@
+.env
+docs/openrouter.rtf
+.venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/
+.DS_Store
+
+# Restore staging bucket (delete folder when you no longer need it)
+_restore_staging/
