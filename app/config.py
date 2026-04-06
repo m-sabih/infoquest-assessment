@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     chroma_path: str = Field(default="./data/chroma", validation_alias="CHROMA_PATH")
     collection_name: str = Field(default="candidates", validation_alias="COLLECTION_NAME")
 
-    candidate_page_size: int = Field(default=200, ge=1, le=2000, validation_alias="CANDIDATE_PAGE_SIZE")
-    embedding_batch_size: int = Field(default=24, ge=1, le=128, validation_alias="EMBEDDING_BATCH_SIZE")
+    candidate_page_size: int = Field(default=200, ge=1, le=20_000, validation_alias="CANDIDATE_PAGE_SIZE")
+    embedding_batch_size: int = Field(default=24, ge=1, le=1024, validation_alias="EMBEDDING_BATCH_SIZE")
     max_profile_chars: int = Field(default=24_000, ge=1000, validation_alias="MAX_PROFILE_CHARS")
 
 
