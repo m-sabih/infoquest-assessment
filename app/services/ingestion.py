@@ -49,7 +49,13 @@ async def run_ingestion(
 
     if body.replace_collection:
         logger.info("Resetting Chroma collection=%s", store.collection_name)
+        t_reset0 = time.perf_counter()
         await asyncio.to_thread(store.reset_collection)
+        logger.info(
+            "Reset Chroma collection=%s in %.3fs",
+            store.collection_name,
+            time.perf_counter() - t_reset0,
+        )
 
     client = EmbeddingsClient(
         api_key=settings.openrouter_api_key,
@@ -58,6 +64,11 @@ async def run_ingestion(
     )
 
     page_idx = 0
+    logger.info(
+        "Starting DB pagination (page_size=%s limit=%s)",
+        settings.candidate_page_size,
+        body.limit,
+    )
     async for page in iter_candidate_pages(
         pool,
         page_size=settings.candidate_page_size,
