@@ -23,6 +23,14 @@ class Settings(BaseSettings):
         default="openai/text-embedding-3-small",
         validation_alias="EMBEDDING_MODEL",
     )
+    chat_model: str = Field(
+        default="openai/gpt-5.4",
+        validation_alias="CHAT_MODEL",
+    )
+    chat_checkpoint_path: str = Field(
+        default="./data/langgraph/checkpoints.sqlite",
+        validation_alias="CHAT_CHECKPOINT_PATH",
+    )
 
     chroma_path: str = Field(default="./data/chroma", validation_alias="CHROMA_PATH")
     collection_name: str = Field(default="candidates", validation_alias="COLLECTION_NAME")
