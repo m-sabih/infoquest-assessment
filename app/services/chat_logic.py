@@ -30,14 +30,17 @@ async def rewrite_query(
     previous_query: str | None,
     previous_result_ids: list[str] | None,
 ) -> RewriteResult:
-    prev_q = (previous_query or "").strip()
-    if not settings.openrouter_api_key.strip() or not prev_q:
-        logger.info("rewrite_query: skip (no api key or no previous_query)")
+    if not settings.openrouter_api_key.strip():
+        logger.info("rewrite_query: skip (no api key)")
         return RewriteResult(rewritten_query=query, use_previous_results=False)
 
+    prev_q = (previous_query or "").strip()
+    is_followup = bool(prev_q)
+
     logger.info(
-        "rewrite_query: start (model=%s prev_ids=%s)\nprevious_query=%r\nquery=%r",
+        "rewrite_query: start (model=%s is_followup=%s prev_ids=%s)\nprevious_query=%r\nquery=%r",
         settings.chat_model,
+        is_followup,
         len(previous_result_ids or []),
         prev_q,
         query,
@@ -48,18 +51,29 @@ async def rewrite_query(
         model=settings.chat_model,
     )
     system = (
-        "You rewrite follow-up expert-search queries into a standalone query. "
-        "Return JSON only with keys: rewritten_query (string), use_previous_results (boolean)."
+        "You rewrite expert-search queries into clean, embedding-optimized standalone queries.\n"
+        "Always:\n"
+        "- Strip conversational filler: 'Find me', 'I need', 'Can you find', 'I am looking for',\n"
+        "  'Show me', 'Search for', 'Look for', 'Get me', 'I want', 'Please find', etc.\n"
+        "- Produce a concise, keyword-dense query that captures role, skills, industry, seniority,\n"
+        "  and location intent — the kind of text that embeds well for semantic search.\n"
+        "- If a previous query exists and the new query is a follow-up, merge the full intent from\n"
+        "  both into a single standalone query.\n"
+        "- Set use_previous_results=true ONLY if the user explicitly references prior results\n"
+        "  (e.g., 'those', 'them', 'from those results', 'filter those').\n"
+        "Return JSON only: {\"rewritten_query\": \"<clean query>\", \"use_previous_results\": false}"
     )
-    user = (
-        f"Previous query:\n{prev_q}\n\n"
-        f"User query:\n{query}\n\n"
-        f"Previous result ids count: {len(previous_result_ids or [])}\n\n"
-        "Rules:\n"
-        "- If the user references prior results (e.g., 'those', 'them', 'filter those'), set use_previous_results=true.\n"
-        "- rewritten_query must be standalone, incorporating the intent from the previous query when needed.\n"
-        "- Output JSON only."
-    )
+
+    if is_followup:
+        user = (
+            f"Previous query:\n{prev_q}\n\n"
+            f"User query:\n{query}\n\n"
+            f"Previous result ids count: {len(previous_result_ids or [])}\n\n"
+            "Output JSON only."
+        )
+    else:
+        user = f"User query:\n{query}\n\nOutput JSON only."
+
     try:
         obj = await client.json_completion(system=system, user=user)
     except Exception:
@@ -69,7 +83,8 @@ async def rewrite_query(
     rq = str(obj.get("rewritten_query") or "").strip() or query
     upr = bool(obj.get("use_previous_results")) if "use_previous_results" in obj else False
     logger.info(
-        "rewrite_query: done (use_previous_results=%s)\nrewritten_query=%r",
+        "rewrite_query: done (is_followup=%s use_previous_results=%s)\nrewritten_query=%r",
+        is_followup,
         upr,
         rq,
     )
@@ -140,13 +155,29 @@ async def extract_filters_llm(
     system = (
         "You extract structured search filters from an expert-search query.\n"
         "Return JSON only with keys:\n"
-        "- query_text: string (the semantic query to embed)\n"
+        "- query_text: string (the semantic query to embed, keep ALL intent including regions/industries)\n"
         "- where: object|null (Chroma metadata filters)\n\n"
-        "Allowed where fields (ONLY these): country, city, nationality, years_of_experience.\n"
+        "Allowed where fields (ONLY these, must match stored metadata):\n"
+        "- candidate_id\n"
+        "- headline\n"
+        "- city\n"
+        "- country\n"
+        "- nationality\n"
+        "- years_of_experience\n"
+        "- text_truncated\n"
         "Rules:\n"
-        "- Use exact string values for country/city/nationality when specified.\n"
+        "- If the user specifies ANY filterable constraint, you SHOULD express it as a hard filter in where.\n"
+        "  Filterable constraints include: city, country, nationality, years_of_experience ranges, candidate_id, and regions.\n"
+        "- Use exact string values for country/city/nationality ONLY when the user names a specific city or country (e.g. 'in Dubai', 'from Germany').\n"
+        "- For REGIONS (Middle East, APAC, Europe, Latin America, etc.), create a HARD filter using $or + $in across BOTH country and nationality.\n"
+        "  Example shape:\n"
+        "  {\"$or\": [{\"country\": {\"$in\": [\"...\"]}}, {\"nationality\": {\"$in\": [\"...\"]}}]}\n"
+        "  Region expansions you can use:\n"
+        "  - Middle East countries: Saudi Arabia, United Arab Emirates, Qatar, Kuwait, Bahrain, Oman, Yemen, Iraq, Jordan, Lebanon, Syria, Palestine, Egypt\n"
+        "  - Middle East nationalities: Saudi Arabian, Emirati, Qatari, Kuwaiti, Bahraini, Omani, Yemeni, Iraqi, Jordanian, Lebanese, Syrian, Palestinian, Egyptian\n"        
         "- For years_of_experience, use operators like {\"$gte\": 10} when the user says '10+ years'.\n"
-        "- If no filters, set where=null.\n"
+        "- Only use headline as a filter when the user provides an exact phrase to match; otherwise keep role/function terms in query_text.\n"
+        "- Prefer where=null over a filter that is likely to produce zero results.\n"
         "- Do not invent filters.\n"
         "Output JSON only."
     )
@@ -166,8 +197,24 @@ async def extract_filters_llm(
         logger.warning("extract_filters_llm: invalid where type: %s", type(where))
         return query_text, None
 
-    allowed = {"country", "city", "nationality", "years_of_experience"}
-    cleaned: dict[str, Any] = {k: v for k, v in where.items() if k in allowed and v is not None}
+    # Pass Chroma logical operators ($or, $and) through unchanged; only strip
+    # unrecognised plain field names to avoid Chroma validation errors.
+    allowed_fields = {
+        "candidate_id",
+        "headline",
+        "city",
+        "country",
+        "nationality",
+        "years_of_experience",
+        "text_truncated",
+    }
+    logical_ops = {"$or", "$and", "$not"}
+    cleaned: dict[str, Any] = {}
+    for k, v in where.items():
+        if k in logical_ops:
+            cleaned[k] = v
+        elif k in allowed_fields and v is not None:
+            cleaned[k] = v
     logger.info("extract_filters_llm: done (where=%s)\nquery_text=%r", cleaned, query_text)
     return query_text, cleaned or None
 
@@ -255,16 +302,22 @@ async def explain_matches_llm(
         )
 
     system = (
-        "You are an expert recruiter assistant. "
-        "Given a user search query and candidate profile snippets, produce concise explanations. "
+        "You are an expert recruiter assistant and relevance judge. "
+        "Given a user search query and candidate profile snippets:\n"
+        "1. Score each candidate's relevance to the query on a scale of 0–10 (10 = perfect match on ALL stated requirements, "
+        "0 = completely irrelevant). Be strict: missing a core requirement (wrong role, wrong industry, wrong region) should "
+        "bring the score below 5.\n"
+        "2. Write a concise explanation and key highlights.\n"
         "You MUST return one item for EVERY candidate_id provided (no omissions). "
         "Return JSON only with shape:\n"
-        "{\"items\": [{\"candidate_id\": \"<id>\", \"why_match\": \"<text>\", \"highlights\": [\"<h1>\", \"<h2>\"]}]}.\n"
+        "{\"items\": [{\"candidate_id\": \"<id>\", \"relevance_score\": 8, \"why_match\": \"<text>\", \"highlights\": [\"<h1>\", \"<h2>\"]}]}.\n"
         "Example:\n"
-        "{\"items\": [{\"candidate_id\": \"9c2f...\", \"why_match\": \"Matches due to regulatory affairs experience in pharma and MENA exposure.\", "
+        "{\"items\": [{\"candidate_id\": \"9c2f...\", \"relevance_score\": 9, "
+        "\"why_match\": \"Strong match — Regulatory Affairs Lead at a pharma company in Dubai with 12 years MENA experience.\", "
         "\"highlights\": [\"Regulatory Affairs Lead — pharma\", \"Based in Dubai, UAE\", \"12 years experience\"]}]}\n"
         "Rules:\n"
-        "- why_match: 1-2 short sentences, specific to the query.\n"
+        "- relevance_score: integer 0–10. Missing ANY core requirement lowers the score significantly.\n"
+        "- why_match: 1-2 short sentences, specific to the query. If weak, state the gaps clearly.\n"
         "- highlights: 2-5 bullet-like strings, no markdown.\n"
         "- Do not invent facts not present in the snippet/fields.\n"
         "- Output JSON only."
@@ -299,7 +352,14 @@ async def explain_matches_llm(
         if not isinstance(highs, list):
             highs = []
         highlights = [str(h).strip() for h in highs if str(h).strip()][:5]
-        out[cid] = {"why_match": why, "highlights": highlights}
+
+        raw_score = it.get("relevance_score")
+        try:
+            relevance_score = float(raw_score) if raw_score is not None else None
+        except (TypeError, ValueError):
+            relevance_score = None
+
+        out[cid] = {"why_match": why, "highlights": highlights, "relevance_score": relevance_score}
 
     logger.info("explain_matches_llm: done (explained=%s of %s)", len(out), len(expected_ids))
     return out
