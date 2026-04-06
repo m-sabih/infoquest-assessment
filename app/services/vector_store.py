@@ -53,3 +53,16 @@ class VectorStore:
             documents=documents,
             metadatas=metadatas,
         )
+
+    def query(
+        self,
+        *,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> dict:
+        col = self._collection()
+        return col.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["metadatas", "documents", "distances"],
+        )
