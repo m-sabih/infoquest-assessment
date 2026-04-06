@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import json
 import logging
+from typing import Any
 from uuid import UUID
 
 from app.config import Settings
@@ -81,15 +82,16 @@ async def search_experts(
     store: VectorStore,
     query: str,
     top_k: int,
+    where: dict[str, Any] | None = None,
 ) -> list[dict]:
-    logger.info("search_experts: start (top_k=%s)\nquery=%r", top_k, query)
+    logger.info("search_experts: start (top_k=%s where=%s)\nquery=%r", top_k, where, query)
     embed = EmbeddingsClient(
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         model=settings.embedding_model,
     )
     [qemb] = await embed.embed_texts([query])
-    res = store.query(query_embedding=qemb, top_k=top_k)
+    res = store.query(query_embedding=qemb, top_k=top_k, where=where)
 
     ids = (res.get("ids") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
@@ -112,6 +114,62 @@ async def search_experts(
         )
     logger.info("search_experts: done (hits=%s)", len(out))
     return out
+
+
+async def extract_filters_llm(
+    *,
+    settings: Settings,
+    query: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """
+    Extract structured Chroma metadata filters from the query.
+
+    Returns:
+    - query_text: the semantic query to embed
+    - where: Chroma `where` filter dict (or None)
+    """
+    if not settings.openrouter_api_key.strip():
+        logger.info("extract_filters_llm: skip (no api key)")
+        return query, None
+
+    client = ChatClient(
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        model=settings.chat_model,
+    )
+    system = (
+        "You extract structured search filters from an expert-search query.\n"
+        "Return JSON only with keys:\n"
+        "- query_text: string (the semantic query to embed)\n"
+        "- where: object|null (Chroma metadata filters)\n\n"
+        "Allowed where fields (ONLY these): country, city, nationality, years_of_experience.\n"
+        "Rules:\n"
+        "- Use exact string values for country/city/nationality when specified.\n"
+        "- For years_of_experience, use operators like {\"$gte\": 10} when the user says '10+ years'.\n"
+        "- If no filters, set where=null.\n"
+        "- Do not invent filters.\n"
+        "Output JSON only."
+    )
+    user = {"query": query}
+    try:
+        obj = await client.json_completion(system=system, user=json.dumps(user, ensure_ascii=False))
+    except Exception:
+        logger.exception("extract_filters_llm: LLM call failed")
+        return query, None
+
+    query_text = str((obj or {}).get("query_text") or "").strip() or query
+    where = (obj or {}).get("where")
+    if where is None:
+        logger.info("extract_filters_llm: done (where=None)\nquery_text=%r", query_text)
+        return query_text, None
+    if not isinstance(where, dict):
+        logger.warning("extract_filters_llm: invalid where type: %s", type(where))
+        return query_text, None
+
+    allowed = {"country", "city", "nationality", "years_of_experience"}
+    cleaned: dict[str, Any] = {k: v for k, v in where.items() if k in allowed and v is not None}
+    logger.info("extract_filters_llm: done (where=%s)\nquery_text=%r", cleaned, query_text)
+    return query_text, cleaned or None
 
 
 def build_matches_base(*, hits: list[dict]) -> list[dict]:

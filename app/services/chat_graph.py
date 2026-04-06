@@ -6,7 +6,13 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from app.config import Settings
-from app.services.chat_logic import build_matches_base, explain_matches_llm, rewrite_query, search_experts
+from app.services.chat_logic import (
+    build_matches_base,
+    explain_matches_llm,
+    extract_filters_llm,
+    rewrite_query,
+    search_experts,
+)
 from app.services.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -24,6 +30,8 @@ class ChatGraphState(TypedDict, total=False):
     # intermediate
     rewritten_query: str
     use_previous_results: bool
+    query_text: str
+    where: dict
     hits: list[dict]
     attempt: int
 
@@ -88,7 +96,15 @@ async def _retrieve_node(
 ) -> ChatGraphState:
     q = state.get("rewritten_query") or state["query"]
     logger.info("chat_graph: retrieve start (top_k=%s)\nquery=%r", state.get("top_k"), q)
-    hits = await search_experts(settings=settings, store=store, query=q, top_k=state["top_k"])
+
+    query_text, where = await extract_filters_llm(settings=settings, query=q)
+    hits = await search_experts(
+        settings=settings,
+        store=store,
+        query=query_text,
+        top_k=state["top_k"],
+        where=where,
+    )
 
     # If the user asked to filter prior results, restrict to those ids.
     if state.get("use_previous_results") and state.get("previous_result_ids"):
@@ -97,8 +113,8 @@ async def _retrieve_node(
         hits = [h for h in hits if str(h.get("candidate_id")) in keep]
         logger.info("chat_graph: retrieve filtered_to_previous (before=%s after=%s)", before, len(hits))
 
-    logger.info("chat_graph: retrieve done (hits=%s)", len(hits))
-    return {"hits": hits}
+    logger.info("chat_graph: retrieve done (hits=%s where=%s)", len(hits), where)
+    return {"hits": hits, "query_text": query_text, "where": where or {}}
 
 
 async def _retry_node(

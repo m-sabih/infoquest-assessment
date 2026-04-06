@@ -59,10 +59,12 @@ class VectorStore:
         *,
         query_embedding: list[float],
         top_k: int = 10,
+        where: dict | None = None,
     ) -> dict:
         col = self._collection()
         return col.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
+            where=where,
             include=["metadatas", "documents", "distances"],
         )
