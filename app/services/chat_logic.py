@@ -35,11 +35,11 @@ async def rewrite_query(
         return RewriteResult(rewritten_query=query, use_previous_results=False)
 
     logger.info(
-        "rewrite_query: start (prev_query_len=%s query_len=%s prev_ids=%s model=%s)",
-        len(prev_q),
-        len(query),
-        len(previous_result_ids or []),
+        "rewrite_query: start (model=%s prev_ids=%s)\nprevious_query=%r\nquery=%r",
         settings.chat_model,
+        len(previous_result_ids or []),
+        prev_q,
+        query,
     )
     client = ChatClient(
         api_key=settings.openrouter_api_key,
@@ -68,9 +68,9 @@ async def rewrite_query(
     rq = str(obj.get("rewritten_query") or "").strip() or query
     upr = bool(obj.get("use_previous_results")) if "use_previous_results" in obj else False
     logger.info(
-        "rewrite_query: done (rewritten_len=%s use_previous_results=%s)",
-        len(rq),
+        "rewrite_query: done (use_previous_results=%s)\nrewritten_query=%r",
         upr,
+        rq,
     )
     return RewriteResult(rewritten_query=rq, use_previous_results=upr)
 
@@ -82,7 +82,7 @@ async def search_experts(
     query: str,
     top_k: int,
 ) -> list[dict]:
-    logger.info("search_experts: start (query_len=%s top_k=%s)", len(query), top_k)
+    logger.info("search_experts: start (top_k=%s)\nquery=%r", top_k, query)
     embed = EmbeddingsClient(
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
@@ -170,10 +170,11 @@ async def explain_matches_llm(
 
     expected_ids = [str(h.get("candidate_id")) for h in hits]
     logger.info(
-        "explain_matches_llm: start (query_len=%s hits=%s model=%s)",
-        len(query),
-        len(hits),
+        "explain_matches_llm: start (model=%s hits=%s)\nquery=%r\ncandidate_ids=%s",
         settings.chat_model,
+        len(hits),
+        query,
+        expected_ids,
     )
     client = ChatClient(
         api_key=settings.openrouter_api_key,

@@ -56,7 +56,12 @@ def _should_retry(state: ChatGraphState) -> bool:
 
 
 async def _rewrite_node(state: ChatGraphState, *, settings: Settings) -> ChatGraphState:
-    logger.info("chat_graph: rewrite start (query_len=%s)", len(state.get("query") or ""))
+    logger.info(
+        "chat_graph: rewrite start\nquery=%r\nprevious_query=%r\nprevious_result_ids_count=%s",
+        state.get("query") or "",
+        state.get("previous_query"),
+        len(state.get("previous_result_ids") or []),
+    )
     rr = await rewrite_query(
         settings=settings,
         query=state["query"],
@@ -82,7 +87,7 @@ async def _retrieve_node(
     store: VectorStore,
 ) -> ChatGraphState:
     q = state.get("rewritten_query") or state["query"]
-    logger.info("chat_graph: retrieve start (query_len=%s top_k=%s)", len(q), state.get("top_k"))
+    logger.info("chat_graph: retrieve start (top_k=%s)\nquery=%r", state.get("top_k"), q)
     hits = await search_experts(settings=settings, store=store, query=q, top_k=state["top_k"])
 
     # If the user asked to filter prior results, restrict to those ids.
@@ -103,7 +108,7 @@ async def _retry_node(
     store: VectorStore,
 ) -> ChatGraphState:
     # Retry with the raw user query (skip rewrite), preserving prior-result filtering if requested.
-    logger.info("chat_graph: retry start (query_len=%s top_k=%s)", len(state.get("query") or ""), state.get("top_k"))
+    logger.info("chat_graph: retry start (top_k=%s)\nquery=%r", state.get("top_k"), state.get("query") or "")
     hits = await search_experts(settings=settings, store=store, query=state["query"], top_k=state["top_k"])
     if state.get("use_previous_results") and state.get("previous_result_ids"):
         keep = set(state["previous_result_ids"])
