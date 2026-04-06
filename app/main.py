@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 import logging
 import asyncpg
@@ -28,6 +29,9 @@ async def lifespan(app: FastAPI):
         persist_path=settings.chroma_path,
         collection_name=settings.collection_name,
     )
+
+    # Ensure the directory for the SQLite checkpoint file exists.    
+    os.makedirs(os.path.dirname(os.path.abspath(settings.chat_checkpoint_path)), exist_ok=True)
 
     # LangGraph checkpointer (SQLite) for conversation state.
     saver_cm = AsyncSqliteSaver.from_conn_string(settings.chat_checkpoint_path)
