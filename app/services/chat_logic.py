@@ -3,7 +3,7 @@ from uuid import UUID
 
 from app.config import Settings
 from app.services.embeddings_client import EmbeddingsClient
-from app.services.openrouter_chat_client import OpenRouterChatClient
+from app.services.chat_client import ChatClient
 from app.services.vector_store import VectorStore
 
 
@@ -29,7 +29,7 @@ async def rewrite_query(
     if not settings.openrouter_api_key.strip() or not prev_q:
         return RewriteResult(rewritten_query=query, use_previous_results=False)
 
-    client = OpenRouterChatClient(
+    client = ChatClient(
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         model=settings.chat_model,
@@ -146,7 +146,7 @@ async def explain_matches_llm(
     if not hits:
         return {}
 
-    client = OpenRouterChatClient(
+    client = ChatClient(
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         model=settings.chat_model,
