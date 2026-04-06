@@ -1,11 +1,17 @@
 from contextlib import asynccontextmanager
-
+import logging
 import asyncpg
 from fastapi import FastAPI
 
 from app.api.routes import candidates, health, ingest
 from app.config import get_settings
 from app.services.vector_store import VectorStore
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -20,8 +26,10 @@ async def lifespan(app: FastAPI):
         persist_path=settings.chroma_path,
         collection_name=settings.collection_name,
     )
-    yield
+    logger.info("Startup complete (db pool + vector store ready).")
+    yield    
     await app.state.db_pool.close()    
+    logger.info("Shutdown complete.")
 
 
 def create_app() -> FastAPI:
