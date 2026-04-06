@@ -9,6 +9,12 @@ class IngestRequest(BaseModel):
         description="If true, drops and recreates the vector collection before indexing.",
     )
 
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional maximum number of candidates to ingest (None means no limit).",
+    )
+
 
 class IngestResponse(BaseModel):
     status: str
