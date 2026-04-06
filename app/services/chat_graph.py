@@ -117,14 +117,33 @@ async def _explain_node(state: ChatGraphState, *, settings: Settings) -> ChatGra
     }
 
 
+class ChatNodes:
+    def __init__(self, *, settings: Settings, store: VectorStore) -> None:
+        self._settings = settings
+        self._store = store
+
+    async def rewrite(self, state: ChatGraphState) -> ChatGraphState:
+        return await _rewrite_node(state, settings=self._settings)
+
+    async def retrieve(self, state: ChatGraphState) -> ChatGraphState:
+        return await _retrieve_node(state, settings=self._settings, store=self._store)
+
+    async def retry(self, state: ChatGraphState) -> ChatGraphState:
+        return await _retry_node(state, settings=self._settings, store=self._store)
+
+    async def explain(self, state: ChatGraphState) -> ChatGraphState:
+        return await _explain_node(state, settings=self._settings)
+
+
 def build_chat_graph(*, settings: Settings, store: VectorStore, checkpointer=None):
     g: StateGraph[ChatGraphState] = StateGraph(ChatGraphState)
+    nodes = ChatNodes(settings=settings, store=store)
 
-    g.add_node("rewrite", lambda s: _rewrite_node(s, settings=settings))
-    g.add_node("retrieve", lambda s: _retrieve_node(s, settings=settings, store=store))
-    g.add_node("retry", lambda s: _retry_node(s, settings=settings, store=store))
+    g.add_node("rewrite", nodes.rewrite)
+    g.add_node("retrieve", nodes.retrieve)
+    g.add_node("retry", nodes.retry)
     g.add_node("format_base", _format_base_node)
-    g.add_node("explain", lambda s: _explain_node(s, settings=settings))
+    g.add_node("explain", nodes.explain)
 
     g.add_edge(START, "rewrite")
     g.add_edge("rewrite", "retrieve")
