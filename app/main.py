@@ -3,8 +3,9 @@ from contextlib import asynccontextmanager
 import asyncpg
 from fastapi import FastAPI
 
-from app.api.routes import candidates, health
+from app.api.routes import candidates, health, ingest
 from app.config import get_settings
+from app.services.vector_store import VectorStore
 
 
 @asynccontextmanager
@@ -15,6 +16,10 @@ async def lifespan(app: FastAPI):
     if "+asyncpg" in dsn:
         dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
     app.state.db_pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=8)    
+    app.state.vector_store = VectorStore(
+        persist_path=settings.chroma_path,
+        collection_name=settings.collection_name,
+    )
     yield
     await app.state.db_pool.close()    
 
@@ -24,6 +29,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.include_router(health.router, tags=["health"])
     app.include_router(candidates.router, tags=["candidates"])
+    app.include_router(ingest.router, tags=["ingest"])
     return app
 
 
