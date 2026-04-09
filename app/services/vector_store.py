@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import chromadb
 from chromadb.api import Collection
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStore:
@@ -62,9 +65,17 @@ class VectorStore:
         where: dict | None = None,
     ) -> dict:
         col = self._collection()
+        logger.info("Recieved where query: %s", where)
+        filters = []
+        for key, value in where.items():
+            filters.append({key: value})            
+        if len(filters) > 1:
+            where_clause = {"$and": filters}
+        else:
+            where_clause = where
         return col.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
-            where=where,
+            where=where_clause,
             include=["metadatas", "documents", "distances"],
         )
