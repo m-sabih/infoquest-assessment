@@ -30,6 +30,6 @@ class ExpertMatch(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: str
     query: str
-    rewritten_query: str | None = None
+    # rewritten_query: str | None = None
     results: list[ExpertMatch]
 

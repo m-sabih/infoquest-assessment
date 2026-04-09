@@ -99,6 +99,17 @@ async def search_experts(
     top_k: int,
     where: dict[str, Any] | None = None,
 ) -> list[dict]:
+    """
+    Search for experts in the vector store.
+    Args:
+        settings: The settings object.
+        store: The vector store object.
+        query: The query to search for.
+        top_k: The number of results to return.
+        where: The where clause to filter the results by.
+    Returns:
+        A list of dictionaries, each containing the expert's metadata, distance, and score.
+    """
     logger.info("search_experts: start (top_k=%s where=%s)\nquery=%r", top_k, where, query)
     embed = EmbeddingsClient(
         api_key=settings.openrouter_api_key,
@@ -231,7 +242,7 @@ def build_matches_base(*, hits: list[dict]) -> list[dict]:
 
         first = str(meta.get("first_name") or "").strip()
         last = str(meta.get("last_name") or "").strip()
-        name = (first + " " + last).strip() or str(uuid)
+        name = (first + " " + last).strip()
 
         city = str(meta.get("city") or "").strip()
         country = str(meta.get("country") or "").strip()
