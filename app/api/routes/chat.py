@@ -12,7 +12,7 @@ router = APIRouter()
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     settings = request.app.state.settings
-    graph = request.app.state.chat_graph
+    store = request.app.state.vector_store
     conversation_id = body.conversation_id or uuid4().hex
 
     if not settings.openrouter_api_key.strip():
@@ -21,8 +21,9 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             detail="OPENROUTER_API_KEY is not set. It is required for embeddings during /chat.",
         )
 
-    out = await run_search_agent(        
+    out = await run_search_agent(
         settings=settings,
+        store=store,
         query=body.query,
         top_k=body.top_k,
         thread_id=conversation_id,
